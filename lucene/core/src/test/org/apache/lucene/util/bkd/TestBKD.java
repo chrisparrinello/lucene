@@ -17,11 +17,14 @@
 package org.apache.lucene.util.bkd;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import org.apache.lucene.codecs.MutablePointTree;
 import org.apache.lucene.index.CorruptIndexException;
@@ -39,6 +42,7 @@ import org.apache.lucene.tests.mockfile.ExtrasFS;
 import org.apache.lucene.tests.store.CorruptingIndexOutput;
 import org.apache.lucene.tests.store.MockDirectoryWrapper;
 import org.apache.lucene.tests.util.LuceneTestCase;
+import org.apache.lucene.tests.util.RamUsageTester;
 import org.apache.lucene.tests.util.TestUtil;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IORunnable;
@@ -49,6 +53,63 @@ public class TestBKD extends LuceneTestCase {
 
   protected PointValues getPointValues(IndexInput in) throws IOException {
     return new BKDReader(in, in, in);
+  }
+
+  /**
+   * Counts only what a {@link BKDReader} owns: not its inputs and not shared {@link BKDConfig}s.
+   */
+  private static final RamUsageTester.Accumulator OWNED =
+      new RamUsageTester.Accumulator() {
+        @Override
+        public long accumulateObject(
+            Object o, long shallowSize, Map<Field, Object> fieldValues, Collection<Object> queue) {
+          if (o instanceof IndexInput
+              || (o instanceof BKDConfig c
+                  && c
+                      == BKDConfig.of(
+                          c.numDims(),
+                          c.numIndexDims(),
+                          c.bytesPerDim(),
+                          c.maxPointsInLeafNode()))) {
+            return 0L;
+          }
+          return super.accumulateObject(o, shallowSize, fieldValues, queue);
+        }
+      };
+
+  private long assertRamBytesUsed(BKDConfig config, boolean distinctValues) throws IOException {
+    int numDocs = 100;
+    try (Directory dir = getDirectory(numDocs)) {
+      BKDWriter w = new BKDWriter(numDocs, dir, "tmp", config, 1.0f, numDocs);
+      byte[] scratch = new byte[config.packedBytesLength()];
+      for (int docID = 0; docID < numDocs; docID++) {
+        for (int dim = 0; dim < config.numDims(); dim++) {
+          NumericUtils.intToSortableBytes(distinctValues ? docID + dim : 42, scratch, dim * 4);
+        }
+        w.add(scratch, docID);
+      }
+      long indexFP;
+      try (IndexOutput out = dir.createOutput("bkd", IOContext.DEFAULT)) {
+        IORunnable finalizer = w.finish(out, out, out);
+        indexFP = out.getFilePointer();
+        finalizer.run();
+      }
+      try (IndexInput in = dir.openInput("bkd", IOContext.DEFAULT)) {
+        in.seek(indexFP);
+        BKDReader reader = (BKDReader) getPointValues(in);
+        assertEquals(RamUsageTester.ramUsed(reader, OWNED), reader.ramBytesUsed());
+        return reader.ramBytesUsed();
+      }
+    }
+  }
+
+  public void testRamBytesUsed() throws Exception {
+    // BKDConfig.of(1, 1, 4, 512) is a shared instance; min == max so the arrays are aliased
+    long sharedAliased = assertRamBytesUsed(BKDConfig.of(1, 1, 4, 512), false);
+    long sharedDistinct = assertRamBytesUsed(BKDConfig.of(1, 1, 4, 512), true);
+    assertTrue(sharedAliased < sharedDistinct);
+    // not a default config, so the reader owns its BKDConfig
+    assertRamBytesUsed(new BKDConfig(3, 3, 4, 2), true);
   }
 
   public void testBasicInts1D() throws Exception {

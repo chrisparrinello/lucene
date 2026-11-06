@@ -17,7 +17,10 @@
 package org.apache.lucene.codecs.lucene90;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Map;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.FilterCodec;
 import org.apache.lucene.codecs.PointsFormat;
@@ -25,6 +28,8 @@ import org.apache.lucene.codecs.PointsReader;
 import org.apache.lucene.codecs.PointsWriter;
 import org.apache.lucene.document.BinaryPoint;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.IntPoint;
+import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
@@ -36,9 +41,12 @@ import org.apache.lucene.index.PointValues.Relation;
 import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.tests.index.BasePointsFormatTestCase;
 import org.apache.lucene.tests.index.MockRandomMergePolicy;
+import org.apache.lucene.tests.util.RamUsageTester;
 import org.apache.lucene.tests.util.TestUtil;
+import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.bkd.BKDConfig;
 
 public class TestLucene90PointsFormat extends BasePointsFormatTestCase {
@@ -96,6 +104,49 @@ public class TestLucene90PointsFormat extends BasePointsFormatTestCase {
     assumeFalse(
         "TODO: mess with the parameters and test gets angry!", codec instanceof FilterCodec);
     super.testMergeStability();
+  }
+
+  /** Counts only what the reader owns: not its inputs, read state or shared {@link BKDConfig}s. */
+  private static final RamUsageTester.Accumulator OWNED =
+      new RamUsageTester.Accumulator() {
+        @Override
+        public long accumulateObject(
+            Object o, long shallowSize, Map<Field, Object> fieldValues, Collection<Object> queue) {
+          if (o instanceof IndexInput
+              || o instanceof SegmentReadState
+              || (o instanceof BKDConfig c
+                  && c
+                      == BKDConfig.of(
+                          c.numDims(),
+                          c.numIndexDims(),
+                          c.bytesPerDim(),
+                          c.maxPointsInLeafNode()))) {
+            return 0L;
+          }
+          return super.accumulateObject(o, shallowSize, fieldValues, queue);
+        }
+      };
+
+  public void testRamBytesUsed() throws IOException {
+    try (Directory dir = newDirectory()) {
+      IndexWriterConfig iwc = newIndexWriterConfig();
+      iwc.setCodec(getCodec());
+      try (IndexWriter w = new IndexWriter(dir, iwc)) {
+        for (int i = 0; i < 1000; i++) {
+          Document doc = new Document();
+          doc.add(new IntPoint("one", i));
+          doc.add(new IntPoint("same", 42));
+          doc.add(new IntPoint("three", i, i, i));
+          w.addDocument(doc);
+        }
+        w.forceMerge(1);
+      }
+      try (DirectoryReader reader = DirectoryReader.open(dir)) {
+        PointsReader pr = ((CodecReader) getOnlyLeafReader(reader)).getPointsReader();
+        assertTrue(pr instanceof Lucene90PointsReader);
+        assertEquals(RamUsageTester.ramUsed(pr, OWNED), ((Accountable) pr).ramBytesUsed());
+      }
+    }
   }
 
   // TODO: clean up the math/estimation here rather than suppress so many warnings

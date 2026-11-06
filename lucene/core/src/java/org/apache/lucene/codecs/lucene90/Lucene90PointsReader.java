@@ -29,11 +29,16 @@ import org.apache.lucene.internal.hppc.IntObjectHashMap;
 import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.FileTypeHint;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.IOUtils;
+import org.apache.lucene.util.RamUsageEstimator;
 import org.apache.lucene.util.bkd.BKDReader;
 
 /** Reads point values previously written with {@link Lucene90PointsWriter} */
-public class Lucene90PointsReader extends PointsReader {
+public class Lucene90PointsReader extends PointsReader implements Accountable {
+  private static final long BASE_RAM_BYTES_USED =
+      RamUsageEstimator.shallowSizeOfInstance(Lucene90PointsReader.class);
+
   private final IndexInput indexIn, dataIn;
   private final SegmentReadState readState;
   private final IntObjectHashMap<PointValues> readers = new IntObjectHashMap<>();
@@ -147,6 +152,15 @@ public class Lucene90PointsReader extends PointsReader {
   public void checkIntegrity(MergePolicy.OneMerge merge) throws IOException {
     CodecUtil.checksumEntireFile(indexIn, merge);
     CodecUtil.checksumEntireFile(dataIn, merge);
+  }
+
+  /**
+   * Heap owned by this reader: the per-field {@link BKDReader}s and the map holding them. The
+   * {@link IndexInput}s and the {@link SegmentReadState} are not counted.
+   */
+  @Override
+  public long ramBytesUsed() {
+    return BASE_RAM_BYTES_USED + readers.ramBytesUsed();
   }
 
   @Override

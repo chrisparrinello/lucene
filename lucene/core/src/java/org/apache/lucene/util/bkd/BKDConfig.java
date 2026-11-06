@@ -94,6 +94,16 @@ public record BKDConfig(int numDims, int numIndexDims, int bytesPerDim, int maxP
     }
   }
 
+  /** Returns true if {@code config} is one of the JVM-wide instances handed out by {@link #of}. */
+  static boolean isShared(BKDConfig config) {
+    for (BKDConfig shared : DEFAULT_CONFIGS) {
+      if (shared == config) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** numDims * bytesPerDim */
   public int packedBytesLength() {
     return numDims * bytesPerDim;

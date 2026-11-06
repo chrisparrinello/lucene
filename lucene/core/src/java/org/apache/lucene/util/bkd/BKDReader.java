@@ -24,17 +24,24 @@ import org.apache.lucene.index.PointValues;
 import org.apache.lucene.search.AbstractDocIdSetIterator;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IntsRef;
 import org.apache.lucene.util.MathUtil;
+import org.apache.lucene.util.RamUsageEstimator;
 
 /**
  * Handles reading a block KD-tree in byte[] space previously written with {@link BKDWriter}.
  *
  * @lucene.experimental
  */
-public class BKDReader extends PointValues {
+public class BKDReader extends PointValues implements Accountable {
+  private static final long BASE_RAM_BYTES_USED =
+      RamUsageEstimator.shallowSizeOfInstance(BKDReader.class);
+  private static final long CONFIG_RAM_BYTES_USED =
+      RamUsageEstimator.shallowSizeOfInstance(BKDConfig.class);
+
   final BKDConfig config;
   final int numLeaves;
   final IndexInput in;
@@ -123,6 +130,23 @@ public class BKDReader extends PointValues {
     // for only one leaf, balanced and unbalanced trees can be handled the same way
     // we set it to unbalanced.
     this.isTreeBalanced = numLeaves != 1 && isTreeBalanced();
+  }
+
+  /**
+   * Heap owned by this reader: the min/max packed values (counted once when aliased) and its {@link
+   * BKDConfig} unless that is a shared instance from {@link BKDConfig#of}. The {@link IndexInput}s
+   * are owned and closed by whoever opened them and are not counted.
+   */
+  @Override
+  public long ramBytesUsed() {
+    long bytes = BASE_RAM_BYTES_USED + RamUsageEstimator.sizeOf(minPackedValue);
+    if (maxPackedValue != minPackedValue) { // aliased when the field has a single value
+      bytes += RamUsageEstimator.sizeOf(maxPackedValue);
+    }
+    if (BKDConfig.isShared(config) == false) {
+      bytes += CONFIG_RAM_BYTES_USED;
+    }
+    return bytes;
   }
 
   private boolean isTreeBalanced() throws IOException {
